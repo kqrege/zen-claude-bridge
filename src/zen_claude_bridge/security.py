@@ -1,15 +1,14 @@
 """Authentication and safe-logging utilities."""
 
 import re
-from typing import Optional
+from typing import Union
 
 from fastapi import Header, HTTPException, status
 
 from .config import settings
 
 
-async def verify_bearer(authorization: Optional[str] = Header(None)) -> None:
-    """Reject requests that do not carry a valid bearer token."""
+async def verify_bearer(authorization: Union[str, None] = Header(None)) -> None:
     if not authorization:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -31,9 +30,15 @@ async def verify_bearer(authorization: Optional[str] = Header(None)) -> None:
         )
 
 
-def redact_secrets(text: str) -> str:
-    """Replace likely secret strings with [REDACTED] for safe logging."""
-    # Replace common bearer tokens and API keys in headers and body
+def redact_secrets(value: Union[str, bytes, bytearray, object]) -> str:
+    """Replace likely secret strings with [REDACTED] for safe logging.
+
+    Accepts str, bytes, bytearray, or any object convertible to str.
+    """
+    if isinstance(value, (bytes, bytearray)):
+        text = value.decode("utf-8", errors="replace")
+    else:
+        text = str(value)
     text = re.sub(r"(?i)(Bearer\s+)(sk-\w+|[\w-]{20,})", r"\1[REDACTED]", text)
     text = re.sub(
         r'(?i)("x-api-key"\s*:\s*")([^"]+)', r"\1[REDACTED]", text

@@ -6,42 +6,53 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("zen_claude_bridge")
 
-# Recovery notice that deepseek-cursor-proxy may inject into responses
 DEEPSEEK_RECOVERY_NOTICE = (
     "[deepseek-cursor-proxy] Refreshed reasoning_content history."
 )
 
 
 # ---------------------------------------------------------------------------
-# Anthropic → OpenAI (upstream request)
+# Anthropic -> OpenAI (upstream request)
 # ---------------------------------------------------------------------------
 
 
 def convert_messages(
     anthropic_messages: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Convert a list of Anthropic-format messages to OpenAI chat-format messages."""
+    """Convert a list of Anthropic-format messages to OpenAI chat-format messages.
+
+    A single Anthropic message may produce multiple OpenAI messages when it
+    contains tool_result blocks mixed with text content.
+    """
     openai_messages: List[Dict[str, Any]] = []
     for msg in anthropic_messages:
         role = msg.get("role", "user")
-        c = _convert_content(msg.get("content", ""), role)
-        if c is not None:
-            openai_messages.append(c)
+        converted = _convert_content(msg.get("content", ""), role)
+        openai_messages.extend(converted)
     return openai_messages
+
+
+def _extract_tool_result_text(tr_content: Any) -> str:
+    if isinstance(tr_content, str):
+        return tr_content
+    if isinstance(tr_content, list):
+        parts = []
+        for sub in tr_content:
+            if isinstance(sub, dict) and sub.get("type") == "text":
+                parts.append(sub.get("text", ""))
+        return "".join(parts)
+    return str(tr_content)
 
 
 def _convert_content(
     content: Any, role: str
-) -> Optional[Dict[str, Any]]:
-    """Convert a single message's content field."""
+) -> List[Dict[str, Any]]:
     if isinstance(content, str):
-        # tool_result with string content → role tool
         if role == "tool_result":
-            return {"role": "tool", "content": content}
-        return {"role": role, "content": content}
+            return [{"role": "tool", "content": content}]
+        return [{"role": role, "content": content}]
 
     if isinstance(content, list):
-        # Anthropic content blocks
         text_parts: List[str] = []
         tool_calls: List[Dict[str, Any]] = []
         tool_results: List[Dict[str, Any]] = []
@@ -52,65 +63,55 @@ def _convert_content(
                 text_parts.append(block.get("text", ""))
             elif block_type == "tool_result":
                 tr_content = block.get("content", "")
-                if isinstance(tr_content, list):
-                    for sub in tr_content:
-                        if sub.get("type") == "text":
-                            text_parts.append(sub.get("text", ""))
-                else:
-                    text_parts.append(str(tr_content))
-                # Carry tool_call_id for the 'tool' role
+                tr_text = _extract_tool_result_text(tr_content)
                 tool_id = block.get("tool_use_id", "")
-                if tool_id:
-                    tool_results.append(
-                        {
-                            "role": "tool",
-                            "content": str(tr_content),
-                            "tool_call_id": tool_id,
-                        }
-                    )
+                tool_results.append({
+                    "role": "tool",
+                    "content": tr_text,
+                    "tool_call_id": tool_id,
+                })
             elif block_type == "tool_use":
-                # Anthropic tool_use (request from assistant) → OpenAI tool_calls
                 parsed_input = block.get("input", {})
-                tool_calls.append(
-                    {
-                        "id": block.get("id", ""),
-                        "type": "function",
-                        "function": {
-                            "name": block.get("name", ""),
-                            "arguments": json.dumps(parsed_input),
-                        },
-                    }
-                )
+                tool_calls.append({
+                    "id": block.get("id", ""),
+                    "type": "function",
+                    "function": {
+                        "name": block.get("name", ""),
+                        "arguments": json.dumps(parsed_input),
+                    },
+                })
             elif block_type == "image":
-                # Image blocks not supported by the upstream — drop with notice
                 text_parts.append("[image content not supported by this bridge]")
             else:
-                # Fallback: try to stringify
                 text_parts.append(str(block.get("text", json.dumps(block))))
 
-        # Build the result
-        result: Dict[str, Any] = {"role": role}
-        combined = "".join(text_parts)
-        if combined:
-            result["content"] = combined
-        else:
-            result["content"] = ""
+        result: List[Dict[str, Any]] = []
 
-        # Attach tool_calls for assistant messages
-        if tool_calls:
-            result["tool_calls"] = tool_calls
-
-        # If there were tool results, return those instead
+        # Emit tool results first (they must follow the assistant's tool_calls)
         if tool_results:
-            return tool_results[0]
+            result.extend(tool_results)
+
+        if role == "assistant":
+            msg: Dict[str, Any] = {"role": "assistant"}
+            combined_text = "".join(text_parts)
+            msg["content"] = combined_text if combined_text else ""
+            if tool_calls:
+                msg["tool_calls"] = tool_calls
+            result.append(msg)
+        elif role == "user":
+            combined_text = "".join(text_parts)
+            if combined_text:
+                result.append({"role": "user", "content": combined_text})
+        else:
+            combined_text = "".join(text_parts)
+            result.append({"role": role, "content": combined_text or ""})
 
         return result
 
-    return {"role": role, "content": str(content)}
+    return [{"role": role, "content": str(content)}]
 
 
 def convert_system(system: Any) -> Optional[Dict[str, str]]:
-    """Convert an Anthropic system prompt to an OpenAI system message."""
     if not system:
         return None
     if isinstance(system, str):
@@ -128,7 +129,6 @@ def convert_system(system: Any) -> Optional[Dict[str, str]]:
 def convert_tools(
     tools: Optional[List[Dict[str, Any]]],
 ) -> Optional[List[Dict[str, Any]]]:
-    """Convert Anthropic tool definitions to OpenAI tool definitions."""
     if not tools:
         return None
     openai_tools = []
@@ -146,6 +146,93 @@ def convert_tools(
     return openai_tools
 
 
+# ---------------------------------------------------------------------------
+# OpenAI tool history validation and sanitization
+# ---------------------------------------------------------------------------
+
+
+def validate_openai_tool_history(messages: List[Dict[str, Any]]) -> None:
+    """Validate OpenAI message list for tool-call ordering.
+
+    Raises ValueError with a clear message if the history is invalid.
+    """
+    for i, msg in enumerate(messages):
+        tool_calls = msg.get("tool_calls")
+        if not tool_calls:
+            continue
+
+        tc_ids = {tc.get("id") for tc in tool_calls if tc.get("id")}
+
+        remaining = tc_ids.copy()
+        for j in range(i + 1, len(messages)):
+            if not remaining:
+                break
+            nxt = messages[j]
+            if nxt.get("role") == "tool":
+                tcid = nxt.get("tool_call_id", "")
+                remaining.discard(tcid)
+            else:
+                break
+
+        if remaining:
+            raise ValueError(
+                f"Invalid converted tool history: assistant tool_calls "
+                f"at index {i} not followed by matching tool messages. "
+                f"Missing IDs: {remaining}"
+            )
+
+
+def sanitize_openai_tool_history(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Sanitize message list by removing orphaned tool_calls.
+
+    If an assistant message has tool_calls but no matching tool messages
+    follow it, the tool_calls are removed from that message (text content
+    is preserved). A warning is logged for each occurrence.
+
+    This handles partial/incomplete histories that Claude may send.
+    """
+    result = list(messages)
+    removals: List[int] = []
+
+    for i, msg in enumerate(result):
+        tool_calls = msg.get("tool_calls")
+        if not tool_calls:
+            continue
+
+        tc_ids = {tc.get("id") for tc in tool_calls if tc.get("id")}
+        remaining = tc_ids.copy()
+
+        for j in range(i + 1, len(result)):
+            if not remaining:
+                break
+            nxt = result[j]
+            if nxt.get("role") == "tool":
+                tcid = nxt.get("tool_call_id", "")
+                remaining.discard(tcid)
+
+        if remaining:
+            logger.warning(
+                "Sanitizing incomplete tool history at index %d: "
+                "removing tool_calls with no matching results. IDs: %s",
+                i,
+                remaining,
+            )
+            removals.append(i)
+
+    for i in reversed(removals):
+        msg = result[i]
+        del msg["tool_calls"]
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Upstream body builder
+# ---------------------------------------------------------------------------
+
+
 def build_upstream_body(
     model: str,
     openai_messages: List[Dict[str, Any]],
@@ -155,7 +242,6 @@ def build_upstream_body(
     max_tokens: int = 4096,
     temperature: float = 0.7,
 ) -> Dict[str, Any]:
-    """Build the complete upstream request body."""
     messages = list(openai_messages)
     if system_message:
         messages.insert(0, system_message)
@@ -178,12 +264,6 @@ def build_upstream_body(
 
 
 def strip_recovery_notice(text: str, show_notice: bool = False) -> str:
-    """Remove the DeepSeek reasoning_content recovery notice line from text.
-
-    When *show_notice* is True the text is returned unchanged.
-    When *show_notice* is False any line containing the notice is removed
-    and a warning is logged once per occurrence.
-    """
     if show_notice or DEEPSEEK_RECOVERY_NOTICE not in text:
         return text
 
@@ -201,7 +281,7 @@ def strip_recovery_notice(text: str, show_notice: bool = False) -> str:
 
 
 # ---------------------------------------------------------------------------
-# OpenAI → Anthropic (response)
+# OpenAI -> Anthropic (response)
 # ---------------------------------------------------------------------------
 
 
@@ -211,7 +291,6 @@ def convert_response(
     request_id: str = "msg_0000000000",
     show_recovery_notice: bool = False,
 ) -> Dict[str, Any]:
-    """Convert an OpenAI /v1/chat/completions response to Anthropic /v1/messages format."""
     choices = openai_response.get("choices", [])
     choice = choices[0] if choices else {}
     message = choice.get("message", {})
@@ -221,14 +300,12 @@ def convert_response(
     content_blocks: List[Dict[str, Any]] = []
     tool_calls = message.get("tool_calls")
 
-    # Text content — strip recovery notice if disabled
     text_content = strip_recovery_notice(
         message.get("content", ""), show_notice=show_recovery_notice
     )
     if text_content:
         content_blocks.append({"type": "text", "text": text_content})
 
-    # Tool calls
     if tool_calls:
         for tc in tool_calls:
             func = tc.get("function", {})
@@ -245,7 +322,6 @@ def convert_response(
                 }
             )
 
-    # Map finish reasons
     stop_reason_map = {
         "stop": "end_turn",
         "length": "max_tokens",
@@ -253,7 +329,6 @@ def convert_response(
     }
     stop_reason = stop_reason_map.get(finish_reason, finish_reason or "end_turn")
 
-    # Map usage
     input_tokens = usage.get("prompt_tokens", 0)
     output_tokens = usage.get("completion_tokens", 0)
 
@@ -278,7 +353,6 @@ def convert_response(
 
 
 def is_dot_probe(messages: List[Dict[str, Any]]) -> bool:
-    """Detect whether the conversation is a one-token dot probe from Claude."""
     if len(messages) != 1:
         return False
     msg = messages[0]
@@ -293,5 +367,4 @@ def is_dot_probe(messages: List[Dict[str, Any]]) -> bool:
         ).strip()
     else:
         return False
-    # The dot probe is exactly "." with nothing else
     return text == "."

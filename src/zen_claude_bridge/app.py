@@ -25,6 +25,8 @@ from .conversions import (
     convert_system,
     convert_tools,
     is_dot_probe,
+    sanitize_openai_tool_history,
+    validate_openai_tool_history,
 )
 from .security import redact_secrets, verify_bearer
 from .streaming import stream_anthropic_events
@@ -204,6 +206,16 @@ async def create_message(request: Request):
 
     # Convert messages
     openai_messages = convert_messages(messages)
+    openai_messages = sanitize_openai_tool_history(openai_messages)
+    try:
+        validate_openai_tool_history(openai_messages)
+    except ValueError as exc:
+        logger.error("Tool history validation failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+
     system_message = convert_system(system) if system else None
     openai_tools = convert_tools(tools) if tools else None
 
