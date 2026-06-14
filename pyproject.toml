@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zen-claude-bridge"
+version = "0.1.0"
+description = "Anthropic-compatible API bridge to DeepSeek/OpenAI chat completions"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "kqrege", email = "iacobdamianstefan@gmail.com" },
+]
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "httpx>=0.27.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
