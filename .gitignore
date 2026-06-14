@@ -31,5 +31,9 @@ Thumbs.db
 # External managed dependencies (auto-cloned by setup)
 .external/
 
+# Trace dumps from deepseek-cursor-proxy debug mode
+trace-dumps/
+*.trace
+
 # Projects that should not be committed
 deepseek-cursor-proxy/

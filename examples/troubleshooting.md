@@ -195,3 +195,62 @@ python -m uvicorn zen_claude_bridge.app:app --host 127.0.0.1 --port 4000
 cd /path/to/deepseek-cursor-proxy
 uv run deepseek-cursor-proxy --no-ngrok --port 9000 --no-display-reasoning
 ```
+
+---
+
+## `[deepseek-cursor-proxy] Refreshed reasoning_content history.`
+
+**When:** The assistant response contains `[deepseek-cursor-proxy] Refreshed reasoning_content history.` as a visible line.
+
+**What it is:** This is a notice from `deepseek-cursor-proxy`. It means the proxy had to recover or refresh the DeepSeek `reasoning_content` history, likely because prior tool-call reasoning content could not be restored from its cache.
+
+**Effect:** Each time the proxy refreshes reasoning history, it may lose track of earlier tool-call context. If it happens frequently, the model may behave as though it forgot recent conversation context or tool results.
+
+**Not automatically a context-limit error:** This notice is not the same as hitting a 200k context window. It is a cache/recovery event inside the proxy layer.
+
+**Normal users:** The notice is hidden by default. You don't need to do anything.
+
+**Debug users:** To see the notice for debugging, set:
+
+```env
+SHOW_DEEPSEEK_RECOVERY_NOTICE=true
+```
+
+Then restart the bridge. The notice will be visible in responses.
+
+**To reduce occurrences:**
+- Reduce the number of multi-turn tool-call sequences. Each tool round-trip adds reasoning content that the proxy must cache.
+- If using Claude Code subagents, consider shorter subagent prompts.
+- If the notice appears on every request, there may be a deeper issue with the proxy's reasoning cache. Try updating `deepseek-cursor-proxy`:
+
+```powershell
+scripts\update-deepseek-proxy.bat
+```
+
+---
+
+## DeepSeek Proxy Debug: Reject Mode
+
+`deepseek-cursor-proxy` has a debug mode that rejects responses where reasoning content is missing and produces verbose traces.
+
+**Enable it:**
+
+```powershell
+set DEEPSEEK_PROXY_DEBUG_REJECT=1
+scripts\run-deepseek-proxy.bat
+```
+
+This starts the proxy with:
+
+```
+--missing-reasoning-strategy reject --verbose --trace-dir .\trace-dumps
+```
+
+**Warning:** Verbose traces can contain your prompts, code, or API secrets. Do not share them publicly. Traces are saved to `trace-dumps/` under the project root.
+
+**To restore normal mode:** Unset the env var or set it to anything other than `1`:
+
+```powershell
+set DEEPSEEK_PROXY_DEBUG_REJECT=
+scripts\run-deepseek-proxy.bat
+```

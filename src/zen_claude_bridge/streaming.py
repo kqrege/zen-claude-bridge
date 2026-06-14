@@ -1,8 +1,13 @@
 """Anthropic-compatible SSE event generation for streaming responses."""
 
 import json
+import logging
 import uuid
 from typing import Any, AsyncGenerator, Dict, Optional
+
+from .conversions import DEEPSEEK_RECOVERY_NOTICE, strip_recovery_notice
+
+logger = logging.getLogger("zen_claude_bridge")
 
 
 def _make_id(prefix: str = "msg") -> str:
@@ -12,12 +17,14 @@ def _make_id(prefix: str = "msg") -> str:
 async def stream_anthropic_events(
     upstream_stream: AsyncGenerator[bytes, None],
     request_model: str,
+    show_recovery_notice: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Convert OpenAI SSE chunks into Anthropic SSE events."""
     msg_id = _make_id("msg")
     content_index = 0
     has_started = False
     has_content_block_started = False
+    _recovery_notice_logged = False
 
     async for raw_chunk in upstream_stream:
         chunk_str = raw_chunk.decode("utf-8", errors="replace").strip()
@@ -49,27 +56,40 @@ async def stream_anthropic_events(
 
         # Emit content_block_start for text
         text_content = delta.get("content", "")
-        if text_content and not has_content_block_started:
-            has_content_block_started = True
-            yield _sse(
-                "content_block_start",
-                {
-                    "type": "text",
-                    "index": content_index,
-                    "content_block": {"type": "text", "text": ""},
-                },
-            )
-
-        # Content block delta
         if text_content:
-            yield _sse(
-                "content_block_delta",
-                {
-                    "type": "text_delta",
-                    "index": content_index,
-                    "delta": {"text": text_content},
-                },
-            )
+            # Strip DeepSeek recovery notice prefix if disabled
+            if (
+                not show_recovery_notice
+                and not _recovery_notice_logged
+                and text_content.startswith(DEEPSEEK_RECOVERY_NOTICE)
+            ):
+                text_content = text_content[len(DEEPSEEK_RECOVERY_NOTICE):].lstrip("\n")
+                _recovery_notice_logged = True
+                logger.warning(
+                    "DeepSeek reasoning_content recovery occurred; "
+                    "older tool-call context may have been dropped."
+                )
+            if text_content and not has_content_block_started:
+                has_content_block_started = True
+                yield _sse(
+                    "content_block_start",
+                    {
+                        "type": "text",
+                        "index": content_index,
+                        "content_block": {"type": "text", "text": ""},
+                    },
+                )
+
+            # Content block delta
+            if text_content:
+                yield _sse(
+                    "content_block_delta",
+                    {
+                        "type": "text_delta",
+                        "index": content_index,
+                        "delta": {"text": text_content},
+                    },
+                )
 
         # Handle tool calls
         tool_calls = delta.get("tool_calls", [])

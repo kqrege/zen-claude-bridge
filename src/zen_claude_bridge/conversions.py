@@ -1,7 +1,15 @@
 """Conversion helpers between Anthropic and OpenAI API message formats."""
 
 import json
+import logging
 from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger("zen_claude_bridge")
+
+# Recovery notice that deepseek-cursor-proxy may inject into responses
+DEEPSEEK_RECOVERY_NOTICE = (
+    "[deepseek-cursor-proxy] Refreshed reasoning_content history."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -35,6 +43,7 @@ def _convert_content(
     if isinstance(content, list):
         # Anthropic content blocks
         text_parts: List[str] = []
+        tool_calls: List[Dict[str, Any]] = []
         tool_results: List[Dict[str, Any]] = []
 
         for block in content:
@@ -61,7 +70,17 @@ def _convert_content(
                     )
             elif block_type == "tool_use":
                 # Anthropic tool_use (request from assistant) → OpenAI tool_calls
-                pass  # Handled at assistant-message level
+                parsed_input = block.get("input", {})
+                tool_calls.append(
+                    {
+                        "id": block.get("id", ""),
+                        "type": "function",
+                        "function": {
+                            "name": block.get("name", ""),
+                            "arguments": json.dumps(parsed_input),
+                        },
+                    }
+                )
             elif block_type == "image":
                 # Image blocks not supported by the upstream — drop with notice
                 text_parts.append("[image content not supported by this bridge]")
@@ -76,6 +95,10 @@ def _convert_content(
             result["content"] = combined
         else:
             result["content"] = ""
+
+        # Attach tool_calls for assistant messages
+        if tool_calls:
+            result["tool_calls"] = tool_calls
 
         # If there were tool results, return those instead
         if tool_results:
@@ -150,6 +173,34 @@ def build_upstream_body(
 
 
 # ---------------------------------------------------------------------------
+# DeepSeek recovery notice stripping
+# ---------------------------------------------------------------------------
+
+
+def strip_recovery_notice(text: str, show_notice: bool = False) -> str:
+    """Remove the DeepSeek reasoning_content recovery notice line from text.
+
+    When *show_notice* is True the text is returned unchanged.
+    When *show_notice* is False any line containing the notice is removed
+    and a warning is logged once per occurrence.
+    """
+    if show_notice or DEEPSEEK_RECOVERY_NOTICE not in text:
+        return text
+
+    lines = text.split("\n")
+    filtered = [line for line in lines if DEEPSEEK_RECOVERY_NOTICE not in line]
+    result = "\n".join(filtered)
+
+    if result != text:
+        logger.warning(
+            "DeepSeek reasoning_content recovery occurred; "
+            "older tool-call context may have been dropped."
+        )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # OpenAI → Anthropic (response)
 # ---------------------------------------------------------------------------
 
@@ -158,6 +209,7 @@ def convert_response(
     openai_response: Dict[str, Any],
     request_model: str,
     request_id: str = "msg_0000000000",
+    show_recovery_notice: bool = False,
 ) -> Dict[str, Any]:
     """Convert an OpenAI /v1/chat/completions response to Anthropic /v1/messages format."""
     choices = openai_response.get("choices", [])
@@ -169,8 +221,10 @@ def convert_response(
     content_blocks: List[Dict[str, Any]] = []
     tool_calls = message.get("tool_calls")
 
-    # Text content
-    text_content = message.get("content", "")
+    # Text content — strip recovery notice if disabled
+    text_content = strip_recovery_notice(
+        message.get("content", ""), show_notice=show_recovery_notice
+    )
     if text_content:
         content_blocks.append({"type": "text", "text": text_content})
 

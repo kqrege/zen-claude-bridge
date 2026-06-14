@@ -60,6 +60,11 @@ class Settings:
             os.environ.get("REQUEST_TIMEOUT_SECONDS", "600")
         )
     )
+    show_deepseek_recovery_notice: bool = field(
+        default_factory=lambda: os.environ.get(
+            "SHOW_DEEPSEEK_RECOVERY_NOTICE", "false"
+        ).lower() in ("true", "1", "yes")
+    )
 
     @property
     def model_aliases(self) -> List[str]:

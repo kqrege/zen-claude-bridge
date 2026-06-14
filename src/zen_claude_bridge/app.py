@@ -235,6 +235,7 @@ async def create_message(request: Request):
         upstream_response,
         request_model=requested_model,
         request_id=_make_request_id(),
+        show_recovery_notice=settings.show_deepseek_recovery_notice,
     )
     return JSONResponse(content=anthropic_response)
 
@@ -246,7 +247,11 @@ async def _generate_stream(
     """Wrap upstream SSE stream into Anthropic SSE events."""
     try:
         upstream_gen = _forward_stream_upstream(upstream_body)
-        async for event in stream_anthropic_events(upstream_gen, model):
+        async for event in stream_anthropic_events(
+            upstream_gen,
+            model,
+            show_recovery_notice=settings.show_deepseek_recovery_notice,
+        ):
             yield event
     except HTTPException:
         yield f"event: error\ndata: {json.dumps({'error': 'upstream stream failed'})}\n\n"

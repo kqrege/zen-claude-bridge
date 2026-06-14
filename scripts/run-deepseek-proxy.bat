@@ -55,11 +55,35 @@ if exist "%ROOT%\.env" (
     )
 )
 
+:: -------------------------------------------------------
+:: Debug mode: DEEPSEEK_PROXY_DEBUG_REJECT=1
+:: -------------------------------------------------------
+:: When set, runs proxy with --missing-reasoning-strategy reject
+:: and verbose tracing. WARNING: verbose traces can contain
+:: prompts, code, or secrets — do not share them.
+:: -------------------------------------------------------
 echo [DeepSeek Proxy] Starting on http://127.0.0.1:%PROXY_PORT%
 echo [DeepSeek Proxy] Source: %PROXY_SOURCE%
+if defined DEEPSEEK_PROXY_DEBUG_REJECT (
+    if "%DEEPSEEK_PROXY_DEBUG_REJECT%"=="1" (
+        echo [DeepSeek Proxy] DEBUG REJECT MODE ENABLED
+        echo [DeepSeek Proxy]   --missing-reasoning-strategy reject
+        echo [DeepSeek Proxy]   --verbose --trace-dir .\trace-dumps
+        echo [DeepSeek Proxy] WARNING: Traces may contain prompts, code, or secrets.
+    )
+)
 echo.
 cd /d "%PROXY_DIR%"
-uv run deepseek-cursor-proxy --no-ngrok --port %PROXY_PORT% --no-display-reasoning
+
+if defined DEEPSEEK_PROXY_DEBUG_REJECT (
+    if "%DEEPSEEK_PROXY_DEBUG_REJECT%"=="1" (
+        uv run deepseek-cursor-proxy --no-ngrok --port %PROXY_PORT% --no-display-reasoning --missing-reasoning-strategy reject --verbose --trace-dir .\trace-dumps
+    ) else (
+        uv run deepseek-cursor-proxy --no-ngrok --port %PROXY_PORT% --no-display-reasoning
+    )
+) else (
+    uv run deepseek-cursor-proxy --no-ngrok --port %PROXY_PORT% --no-display-reasoning
+)
 
 if errorlevel 1 (
     echo.
