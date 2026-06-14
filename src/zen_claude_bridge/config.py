@@ -66,6 +66,73 @@ class Settings:
         ).lower() in ("true", "1", "yes")
     )
 
+    # ---------------------------------------------------------------
+    # Optional bridge-side memory compaction
+    # ---------------------------------------------------------------
+    bridge_context_compaction: bool = field(
+        default_factory=lambda: os.environ.get(
+            "BRIDGE_CONTEXT_COMPACTION", "false"
+        ).lower() in ("true", "1", "yes")
+    )
+    bridge_compaction_trigger_tokens: int = field(
+        default_factory=lambda: int(
+            os.environ.get("BRIDGE_COMPACTION_TRIGGER_TOKENS", "180000")
+        )
+    )
+    bridge_compaction_target_tokens: int = field(
+        default_factory=lambda: int(
+            os.environ.get("BRIDGE_COMPACTION_TARGET_TOKENS", "120000")
+        )
+    )
+    bridge_compaction_keep_recent_messages: int = field(
+        default_factory=lambda: int(
+            os.environ.get("BRIDGE_COMPACTION_KEEP_RECENT_MESSAGES", "20")
+        )
+    )
+    bridge_compaction_max_summary_chars: int = field(
+        default_factory=lambda: int(
+            os.environ.get("BRIDGE_COMPACTION_MAX_SUMMARY_CHARS", "20000")
+        )
+    )
+    bridge_memory_dir: str = field(
+        default_factory=lambda: os.environ.get(
+            "BRIDGE_MEMORY_DIR", ".bridge-memory"
+        )
+    )
+
+    # ---------------------------------------------------------------
+    # Optional DeepSeek reasoning recovery tracking
+    # ---------------------------------------------------------------
+    bridge_reasoning_recovery_tracking: bool = field(
+        default_factory=lambda: os.environ.get(
+            "BRIDGE_REASONING_RECOVERY_TRACKING", "true"
+        ).lower() in ("true", "1", "yes")
+    )
+    bridge_reasoning_recovery_threshold: int = field(
+        default_factory=lambda: int(
+            os.environ.get("BRIDGE_REASONING_RECOVERY_THRESHOLD", "3")
+        )
+    )
+    bridge_reasoning_safe_mode: str = field(
+        default_factory=lambda: os.environ.get(
+            "BRIDGE_REASONING_SAFE_MODE", "auto"
+        ).lower()
+    )
+    bridge_reasoning_safe_mode_recovery_threshold: int = field(
+        default_factory=lambda: int(
+            os.environ.get(
+                "BRIDGE_REASONING_SAFE_MODE_RECOVERY_THRESHOLD", "3"
+            )
+        )
+    )
+    bridge_reasoning_safe_keep_recent_messages: int = field(
+        default_factory=lambda: int(
+            os.environ.get(
+                "BRIDGE_REASONING_SAFE_KEEP_RECENT_MESSAGES", "8"
+            )
+        )
+    )
+
     @property
     def model_aliases(self) -> List[str]:
         return CLAUDE_MODEL_ALIASES

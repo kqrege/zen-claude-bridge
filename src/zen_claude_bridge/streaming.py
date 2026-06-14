@@ -3,7 +3,7 @@
 import json
 import logging
 import uuid
-from typing import Any, AsyncGenerator, Dict, Optional
+from typing import Any, AsyncGenerator, Callable, Dict, Optional
 
 from .conversions import DEEPSEEK_RECOVERY_NOTICE, strip_recovery_notice
 
@@ -18,8 +18,23 @@ async def stream_anthropic_events(
     upstream_stream: AsyncGenerator[bytes, None],
     request_model: str,
     show_recovery_notice: bool = False,
+    on_recovery_detected: Optional[Callable[[], None]] = None,
 ) -> AsyncGenerator[str, None]:
-    """Convert OpenAI SSE chunks into Anthropic SSE events."""
+    """Convert OpenAI SSE chunks into Anthropic SSE events.
+
+    Parameters
+    ----------
+    upstream_stream
+        Raw SSE byte chunks from the upstream chat completions endpoint.
+    request_model
+        Original model name for the Anthropic response.
+    show_recovery_notice
+        If True, the DeepSeek recovery notice is not stripped.
+    on_recovery_detected
+        Optional callback invoked when a recovery notice is detected in the
+        stream.  Used by the compaction module to track per-session recovery
+        counts.
+    """
     msg_id = _make_id("msg")
     content_index = 0
     has_started = False
@@ -69,6 +84,8 @@ async def stream_anthropic_events(
                     "DeepSeek reasoning_content recovery occurred; "
                     "older tool-call context may have been dropped."
                 )
+                if on_recovery_detected:
+                    on_recovery_detected()
             if text_content and not has_content_block_started:
                 has_content_block_started = True
                 yield _sse(

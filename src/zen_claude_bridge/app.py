@@ -6,6 +6,7 @@ Endpoints
 - GET /v1/models
 - POST /v1/messages
 - POST /v1/messages/count_tokens
+- GET /v1/memory/inspect
 """
 
 import json
@@ -14,9 +15,16 @@ import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Request, Response, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from .compaction import (
+    compute_fingerprint,
+    maybe_compact_messages,
+    session_tracker,
+    should_use_reasoning_safe,
+    DEEPSEEK_RECOVERY_NOTICE as COMPACTION_RECOVERY_NOTICE,
+)
 from .config import settings
 from .conversions import (
     build_upstream_body,
@@ -204,7 +212,19 @@ async def create_message(request: Request):
     # Resolve model
     resolved_model = _resolve_model(requested_model)
 
-    # Convert messages
+    # --- Bridge Memory Compaction (optional) ---
+    fingerprint = compute_fingerprint(body) if settings.bridge_context_compaction else None
+
+    reasoning_safe = False
+    if fingerprint:
+        reasoning_safe = should_use_reasoning_safe(settings, fingerprint)
+
+    if settings.bridge_context_compaction:
+        messages, compact_info = maybe_compact_messages(
+            messages, system, settings, fingerprint, reasoning_safe
+        )
+
+    # Convert messages (after possible compaction)
     openai_messages = convert_messages(messages)
     openai_messages = sanitize_openai_tool_history(openai_messages)
     try:
@@ -232,7 +252,7 @@ async def create_message(request: Request):
 
     if stream:
         return StreamingResponse(
-            _generate_stream(upstream_body, requested_model),
+            _generate_stream(upstream_body, requested_model, fingerprint=fingerprint),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -243,6 +263,11 @@ async def create_message(request: Request):
 
     # Non-streaming
     upstream_response = await _forward_to_upstream(upstream_body)
+
+    # Track DeepSeek reasoning recovery in non-streaming responses
+    if fingerprint:
+        _track_recovery_in_nonstream_response(upstream_response, fingerprint)
+
     anthropic_response = convert_response(
         upstream_response,
         request_model=requested_model,
@@ -255,14 +280,19 @@ async def create_message(request: Request):
 async def _generate_stream(
     upstream_body: Dict[str, Any],
     model: str,
+    fingerprint: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """Wrap upstream SSE stream into Anthropic SSE events."""
+    on_recovery = None
+    if fingerprint:
+        on_recovery = lambda: session_tracker.record_recovery(fingerprint)  # noqa: E731
     try:
         upstream_gen = _forward_stream_upstream(upstream_body)
         async for event in stream_anthropic_events(
             upstream_gen,
             model,
             show_recovery_notice=settings.show_deepseek_recovery_notice,
+            on_recovery_detected=on_recovery,
         ):
             yield event
     except HTTPException:
@@ -272,6 +302,19 @@ async def _generate_stream(
         yield f"event: error\ndata: {json.dumps({'error': 'upstream stream error'})}\n\n"
 
 
+def _track_recovery_in_nonstream_response(
+    response: Dict[str, Any], fingerprint: str
+) -> None:
+    """Check a non-streaming upstream response for the recovery notice."""
+    choices = response.get("choices", [])
+    for choice in choices:
+        msg = choice.get("message", {})
+        content = msg.get("content", "")
+        if isinstance(content, str) and COMPACTION_RECOVERY_NOTICE in content:
+            session_tracker.record_recovery(fingerprint)
+            break
+
+
 # ---------------------------------------------------------------------------
 # Token count endpoint
 # ---------------------------------------------------------------------------
@@ -279,7 +322,12 @@ async def _generate_stream(
 
 @app.post("/v1/messages/count_tokens")
 async def count_tokens(request: Request):
-    """Approximate local token counting — no upstream call."""
+    """Approximate local token counting — no upstream call.
+
+    When compaction is enabled, returns the estimated count *after*
+    compaction so that Claude/Gateway does not force its own
+    destructive compaction too early.
+    """
     auth = request.headers.get("authorization", "")
     await verify_bearer(authorization=auth)
 
@@ -287,5 +335,48 @@ async def count_tokens(request: Request):
     messages: List[Dict[str, Any]] = body.get("messages", [])
     system = body.get("system")
 
+    if settings.bridge_context_compaction:
+        from .compaction import compacted_token_estimate
+        fingerprint = compute_fingerprint(body)
+        estimated = compacted_token_estimate(messages, system, settings, fingerprint)
+        return JSONResponse(content={"input_tokens": estimated})
+
     result = build_count_response(messages, system)
     return JSONResponse(content=result)
+
+
+# ---------------------------------------------------------------------------
+# Compaction / diagnostics endpoint
+# ---------------------------------------------------------------------------
+
+
+@app.get("/v1/memory/inspect")
+async def memory_inspect(request: Request, fingerprint: str = ""):
+    """Return session diagnostics for a given fingerprint.
+
+    This endpoint requires authentication.  It does not return raw prompt
+    content or secrets.
+    """
+    auth = request.headers.get("authorization", "")
+    try:
+        await verify_bearer(authorization=auth)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    if not fingerprint:
+        return {"error": "query parameter 'fingerprint' is required"}
+
+    from .compaction import load_memory_summary
+    info = session_tracker.session_info(fingerprint)
+    summary = load_memory_summary(fingerprint, settings.bridge_memory_dir)
+
+    return {
+        "fingerprint": fingerprint,
+        "compaction_enabled": settings.bridge_context_compaction,
+        "recovery_notice_count": info.get("recovery_notice_count", 0),
+        "last_recovery_at": info.get("last_recovery_at", 0.0),
+        "last_compaction_at": info.get("last_compaction_at", 0.0),
+        "safe_mode_active": info.get("safe_mode_active", False),
+        "has_persisted_summary": summary is not None,
+        "summary_length_chars": len(summary) if summary else 0,
+    }

@@ -219,6 +219,10 @@ SHOW_DEEPSEEK_RECOVERY_NOTICE=true
 Then restart the bridge. The notice will be visible in responses.
 
 **To reduce occurrences:**
+
+This is not the same as hitting a 200k context limit — the proxy's reasoning cache is missing or stale.
+
+- **Enable Bridge Memory Compaction** — the bridge can track recovery events and activate reasoning-safe mode to minimize cache misses. See [Bridge Memory Compaction](../README.md#bridge-memory-compaction).
 - Reduce the number of multi-turn tool-call sequences. Each tool round-trip adds reasoning content that the proxy must cache.
 - If using Claude Code subagents, consider shorter subagent prompts.
 - If the notice appears on every request, there may be a deeper issue with the proxy's reasoning cache. Try updating `deepseek-cursor-proxy`:
@@ -254,3 +258,68 @@ This starts the proxy with:
 set DEEPSEEK_PROXY_DEBUG_REJECT=
 scripts\run-deepseek-proxy.bat
 ```
+
+---
+
+## Repeated Reasoning Recovery / Model Forgetting Context
+
+**When:** You see repeated `DeepSeek reasoning_content recovery occurred` warnings in the logs. After these warnings begin, the model starts forgetting prior context, tool results, or user instructions.
+
+**What it is:** Each time `deepseek-cursor-proxy` recovers reasoning content, it may lose track of older tool-call context. This is a proxy cache recovery event, not necessarily a context-limit error. If compaction changes the message prefix, the proxy cache can miss and trigger another recovery, creating a loop.
+
+**Solutions:**
+
+1. **Enable Bridge Memory Compaction** — set `BRIDGE_CONTEXT_COMPACTION=true` in `.env`. The bridge's reasoning-safe mode activates automatically after repeated recovery events and reduces proxy cache mismatches.
+
+2. **Lower the trigger threshold** — if Claude still compacts internally before the bridge does, set a lower trigger:
+   ```env
+   BRIDGE_COMPACTION_TRIGGER_TOKENS=100000
+   BRIDGE_COMPACTION_KEEP_RECENT_MESSAGES=12
+   ```
+
+3. **Increase summary size** — if the model still forgets details:
+   ```env
+   BRIDGE_COMPACTION_MAX_SUMMARY_CHARS=30000
+   ```
+
+4. **Check for downstream changes** — if you updated `deepseek-cursor-proxy` or changed its arguments, recovery behavior may change.
+
+5. **Do not clear `reasoning_content.sqlite3`** — this database stores the proxy's reasoning cache. Clearing it forces all sessions to enter recovery mode.
+
+---
+
+## Bridge Memory: Summary Contains Sensitive Info
+
+**When:** Memory summary files in `.bridge-memory/` contain sensitive information.
+
+**Fix:** Disable compaction:
+```env
+BRIDGE_CONTEXT_COMPACTION=false
+```
+Then delete the `.bridge-memory/` directory:
+```powershell
+Remove-Item .bridge-memory -Recurse -Force
+```
+
+---
+
+## Bridge Memory: Compaction Happens Too Often
+
+**When:** Compaction logs appear on every request.
+
+**Fix:** Raise the trigger token threshold:
+```env
+BRIDGE_COMPACTION_TRIGGER_TOKENS=250000
+```
+
+---
+
+## Bridge Memory: Model Still Forgot Something
+
+**When:** After compaction, the model does not remember a specific detail.
+
+**Fix:** The extractive summary preserves file paths, commands, errors, and decisions, but may miss nuanced details. Try:
+
+1. Increase `BRIDGE_COMPACTION_MAX_SUMMARY_CHARS=30000` — keeps more text per message.
+2. Increase `BRIDGE_COMPACTION_KEEP_RECENT_MESSAGES=30` — keeps more raw messages.
+3. Lower `BRIDGE_COMPACTION_TRIGGER_TOKENS=120000` — compacts earlier so more raw messages fit.

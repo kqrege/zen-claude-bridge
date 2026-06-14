@@ -33,12 +33,16 @@ This document explains the full request flow, the component roles, and the desig
 │  1. Verify bearer token             │
 │  2. Resolve model alias             │
 │  3. Suppress dot probe if detected  │
-│  4. Convert Anthropic messages      │
+│  4. [Optional] Bridge Memory        │
+│     Compaction (summarize old msgs) │
+│  5. Convert Anthropic messages      │
 │     → OpenAI messages               │
-│  5. Convert Anthropic tools         │
+│  6. Convert Anthropic tools         │
 │     → OpenAI tools                  │
-│  6. Call upstream /v1/chat/completions│
-│  7. Convert OpenAI response         │
+│  7. Call upstream /v1/chat/completions│
+│  8. Track DeepSeek reasoning        │
+│     recovery (streaming + non-str)  │
+│  9. Convert OpenAI response         │
 │     → Anthropic response            │
 └──────────┬──────────────────────────┘
            │
@@ -169,6 +173,8 @@ input_tokens ≈ total_text_length // 4
 ```
 
 This is sufficient for Claude Desktop's UI display. If exact token counts are needed, consider implementing a tokenizer or calling the upstream's token counting endpoint if available.
+
+When **Bridge Memory Compaction** is enabled, ``/v1/messages/count_tokens`` returns the estimated token count *after* compaction. This helps prevent Claude/Gateway from forcing its own destructive compaction before the bridge can compact the payload.
 
 ---
 
