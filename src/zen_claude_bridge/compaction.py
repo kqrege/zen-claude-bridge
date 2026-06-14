@@ -441,12 +441,16 @@ def maybe_compact_messages(
     if not older:
         return messages, None
 
-    # In reasoning-safe mode, strip tool_calls from any messages that
-    # survive from the older section (there shouldn't be any after
-    # the rebalance, but be safe).
+    # In reasoning-safe mode, strip tool_calls from older messages only,
+    # so that no raw tool_use/tool_result pairs from the compacted section
+    # survive in the upstream payload.  The recent window is kept intact
+    # so active tool-call episodes stay correctly paired.
     if reasoning_safe:
         older = [_strip_tool_calls_from_message(m) for m in older]
-        recent = [_strip_tool_calls_from_message(m) for m in recent]
+        # recent messages are NOT stripped — their tool_use and
+        # tool_result pairs must remain intact for the upstream.  See
+        # also sanitize_orphan_tool_results() in conversions.py for a
+        # final safety net at the OpenAI level.
 
     summary_text = _summarize_messages(
         older, max_chars=settings.bridge_compaction_max_summary_chars
@@ -514,7 +518,79 @@ def maybe_compact_messages(
     if fingerprint:
         logger.info("Compaction fingerprint: %s", fingerprint)
 
+    _warn_orphan_tool_pairs(older, recent)
+    _warn_orphan_tool_pairs_summary_only(compacted)
+
     return compacted, info
+
+
+def _warn_orphan_tool_pairs(older: list, recent: list) -> None:
+    """Warn if recent messages contain tool_results whose matching
+    tool_use was in older and was not pulled forward."""
+    if not older or not recent:
+        return
+    # Collect all tool_use IDs from older
+    older_tool_ids: set = set()
+    for msg in older:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                tid = block.get("id", "")
+                if tid:
+                    older_tool_ids.add(tid)
+
+    if not older_tool_ids:
+        return
+
+    # Check if any recent message has a tool_result referencing an older tool_use
+    for msg in recent:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                match_id = block.get("tool_use_id", "")
+                if match_id in older_tool_ids:
+                    logger.warning(
+                        "Orphan tool_result (tool_use_id=%s) retained but "
+                        "its matching tool_use was in older messages. "
+                        "Post-conversion sanitizer will convert to text.",
+                        match_id,
+                    )
+
+
+def _warn_orphan_tool_pairs_summary_only(
+    compacted: List[Dict[str, Any]],
+) -> None:
+    """Check for any tool_result in the compacted payload that has no
+    preceding tool_use in the same payload."""
+    tool_use_ids: set = set()
+    for msg in compacted:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                tid = block.get("id", "")
+                if tid:
+                    tool_use_ids.add(tid)
+
+    for msg in compacted:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                match_id = block.get("tool_use_id", "")
+                if match_id and match_id not in tool_use_ids:
+                    logger.warning(
+                        "Orphan tool_result (tool_use_id=%s) in compacted "
+                        "payload has no matching tool_use. "
+                        "Post-conversion sanitizer will convert to text.",
+                        match_id,
+                    )
 
 
 def compacted_token_estimate(

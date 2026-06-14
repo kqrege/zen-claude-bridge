@@ -181,6 +181,10 @@ def convert_tools(
 def validate_openai_tool_history(messages: List[Dict[str, Any]]) -> None:
     """Validate OpenAI message list for tool-call ordering.
 
+    Checks both directions:
+    * every assistant tool_calls must be followed by matching tool messages
+    * every role:"tool" must have a preceding assistant with matching tool_calls
+
     Raises ValueError with a clear message if the history is invalid.
     """
     for i, msg in enumerate(messages):
@@ -208,19 +212,112 @@ def validate_openai_tool_history(messages: List[Dict[str, Any]]) -> None:
                 f"Missing IDs: {remaining}"
             )
 
+    # Reverse check: every role:tool must have a preceding assistant tool_calls
+    for i, msg in enumerate(messages):
+        if msg.get("role") != "tool":
+            continue
+        tc_id = msg.get("tool_call_id", "")
+        if not tc_id:
+            continue
+        found = False
+        for j in range(i - 1, -1, -1):
+            prev = messages[j]
+            prev_tc = prev.get("tool_calls")
+            if not prev_tc:
+                continue
+            for tc in prev_tc:
+                if tc.get("id") == tc_id:
+                    found = True
+                    break
+            if found:
+                break
+        if not found:
+            raise ValueError(
+                f"Invalid converted tool history: role 'tool' message "
+                f"at index {i} has tool_call_id '{tc_id}' but no preceding "
+                f"assistant message with matching tool_calls."
+            )
+
+
+def sanitize_orphan_tool_results(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Convert orphan ``role: 'tool'`` messages to ``role: 'user'`` text.
+
+    A ``role: 'tool'`` message is orphaned when there is no preceding
+    assistant message with a matching ``tool_calls[].id``.  This can
+    happen after bridge-side compaction if a ``tool_result`` survives
+    but the matching ``tool_use`` was removed or summarized.
+
+    The orphan tool message is converted to a plain user message so
+    the upstream never receives `Messages with role 'tool' must be a
+    response to a preceding message with 'tool_calls'`.
+    """
+    result = list(messages)
+    orphans: List[int] = []
+
+    # Build a set of all tool_call_ids that have a preceding assistant source
+    valid_ids: set = set()
+    for i, msg in enumerate(result):
+        tc = msg.get("tool_calls")
+        if tc:
+            for t in tc:
+                tid = t.get("id")
+                if tid:
+                    valid_ids.add(tid)
+        # A role:tool message consumes a valid id
+        if msg.get("role") == "tool":
+            tcid = msg.get("tool_call_id", "")
+            if tcid in valid_ids:
+                valid_ids.discard(tcid)
+
+    # Now any role:tool whose tool_call_id is NOT in valid_ids is orphaned.
+    # Rebuild valid_ids more carefully: track which tool ids are "current".
+    tool_call_ids: set = set()
+    for i, msg in enumerate(result):
+        tc = msg.get("tool_calls")
+        if tc:
+            for t in tc:
+                tid = t.get("id")
+                if tid:
+                    tool_call_ids.add(tid)
+
+        if msg.get("role") == "tool":
+            tcid = msg.get("tool_call_id", "")
+            if tcid and tcid not in tool_call_ids:
+                orphans.append(i)
+            # Consume the id regardless
+            tool_call_ids.discard(tcid)
+
+    for i in reversed(orphans):
+        msg = result[i]
+        text = msg.get("content", "")
+        logger.warning(
+            "Orphan OpenAI tool message at index %d converted to user text "
+            "during compaction safety net.",
+            i,
+        )
+        result[i] = {"role": "user", "content": str(text) if text else "(tool result summary)"}
+
+    return result
+
 
 def sanitize_openai_tool_history(
     messages: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Sanitize message list by removing orphaned tool_calls.
+    """Sanitize message list by removing orphaned tool_calls and tool_results.
 
-    If an assistant message has tool_calls but no matching tool messages
-    follow it, the tool_calls are removed from that message (text content
-    is preserved). A warning is logged for each occurrence.
+    Pass 1: Convert orphan ``role: 'tool'`` messages to user text (may
+    happen after bridge-side compaction).
+    Pass 2: If an assistant message has ``tool_calls`` but no matching
+    tool messages follow it, remove the ``tool_calls`` from that message
+    (text content is preserved).
 
-    This handles partial/incomplete histories that Claude may send.
+    This handles partial/incomplete histories that Claude may send as
+    well as compaction artifacts.
     """
-    result = list(messages)
+    result = sanitize_orphan_tool_results(messages)
+
     removals: List[int] = []
 
     for i, msg in enumerate(result):

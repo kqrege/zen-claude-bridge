@@ -737,3 +737,298 @@ def test_rebalance_no_older_or_recent():
     o, r = _rebalance_tool_pair_boundary([{"role": "user", "content": "a"}], [])
     assert len(o) == 1
     assert len(r) == 0
+
+
+# -----------------------------------------------------------------------
+# 22. Regression: no orphan tool_result after reasoning-safe compaction
+# -----------------------------------------------------------------------
+
+
+@pytest.fixture
+def conversation_with_tool_pair() -> List[Dict[str, Any]]:
+    """Conversation shaped like the live test scenario.
+
+    0: user - setup (remembered word)
+    1: assistant - response
+    2: user - long context message (triggers compaction)
+    3: assistant - tool_use (web search)
+    4: user - tool_result
+    5: assistant - result
+    6: user - follow-up question
+    """
+    return [
+        {"role": "user", "content": "Remember this word: pineapple_bridge_742"},
+        {"role": "assistant", "content": "I'll remember pineapple_bridge_742."},
+        {
+            "role": "user",
+            "content": "Write a very long story about artificial intelligence. " * 200,
+        },
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "tu_websearch_001",
+                    "name": "web_search",
+                    "input": {"query": "AI latest news"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tu_websearch_001",
+                    "content": "AI news: breakthroughs in reasoning models.",
+                }
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": "I found that AI reasoning models have advanced significantly.",
+        },
+        {"role": "user", "content": "What was the word I asked you to remember?"},
+    ]
+
+
+def test_reasoning_safe_recent_tool_pair_kept_intact(
+    conversation_with_tool_pair,
+):
+    """With keep_recent_messages=4, the tool_use/tool_result pair in the
+    recent window must stay intact (no orphan tool_result)."""
+    settings = _make_settings(
+        bridge_compaction_trigger_tokens=10,
+        bridge_compaction_keep_recent_messages=4,
+        bridge_reasoning_safe_mode="always",
+        bridge_reasoning_safe_keep_recent_messages=4,
+    )
+    msgs = conversation_with_tool_pair  # 7 messages
+
+    compacted, info = maybe_compact_messages(
+        msgs, None, settings, reasoning_safe=True
+    )
+    assert info is not None
+    # compacted = [memory_block] + [recent] = 1 + 4 = 5
+    assert len(compacted) == 5, f"expected 5, got {len(compacted)}"
+
+    # Check that no tool_result is orphaned in the compacted payload
+    # (its matching tool_use was kept in the recent window)
+    recent_messages = compacted[1:]  # skip memory block
+    tool_use_ids = set()
+    for msg in recent_messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    tool_use_ids.add(block.get("id", ""))
+
+    for msg in recent_messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    match_id = block.get("tool_use_id", "")
+                    assert (
+                        match_id in tool_use_ids
+                    ), f"Orphan tool_result {match_id} in recent window (no matching tool_use)"
+
+
+def test_reasoning_safe_no_orphan_tool_result_after_conversion(
+    conversation_with_tool_pair,
+):
+    """After reasoning-safe compaction + conversion to OpenAI,
+    there must be no orphan role:tool messages."""
+    from zen_claude_bridge.conversions import (
+        convert_messages,
+        sanitize_openai_tool_history,
+        validate_openai_tool_history,
+    )
+
+    settings = _make_settings(
+        bridge_compaction_trigger_tokens=10,
+        bridge_compaction_keep_recent_messages=4,
+        bridge_reasoning_safe_mode="always",
+        bridge_reasoning_safe_keep_recent_messages=4,
+    )
+
+    compacted, info = maybe_compact_messages(
+        conversation_with_tool_pair, None, settings, reasoning_safe=True
+    )
+    assert info is not None
+
+    openai_msgs = convert_messages(compacted)
+    sanitized = sanitize_openai_tool_history(openai_msgs)
+
+    # Must not raise ValueError
+    validate_openai_tool_history(sanitized)
+
+    # Manually verify no orphan role:tool
+    tool_call_ids = set()
+    for msg in sanitized:
+        tc = msg.get("tool_calls")
+        if tc:
+            for t in tc:
+                tid = t.get("id")
+                if tid:
+                    tool_call_ids.add(tid)
+
+    for msg in sanitized:
+        if msg.get("role") == "tool":
+            tcid = msg.get("tool_call_id", "")
+            if tcid:
+                assert tcid in tool_call_ids, (
+                    f"Orphan role:tool with tool_call_id {tcid} "
+                    f"after compaction + sanitization"
+                )
+
+
+def test_no_tool_pair_split_at_keep_boundary():
+    """When keep_recent_messages splits between tool_use and tool_result,
+    the rebalance must pull the tool_use forward."""
+    settings = _make_settings(
+        bridge_compaction_trigger_tokens=10,
+        bridge_compaction_keep_recent_messages=4,
+    )
+    # Tool_use is at index 3 (assistant), tool_result at index 4 (user)
+    # split_idx = max(0, 7-4) = 3  → older=[0,1,2], recent=[3,4,5,6]
+    # So tool_use at 3 and tool_result at 4 are both in recent. Fine.
+    # But now let's test the actual rebalance: tool_use at older[-1]
+    msgs = [
+        {"role": "user", "content": "setup"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "do something"},
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "tu_001", "name": "foo", "input": {}}],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "tu_001", "content": "done"}],
+        },
+        {"role": "assistant", "content": "finished"},
+        {"role": "user", "content": "thanks"},
+    ]
+    compacted, info = maybe_compact_messages(msgs, None, settings)
+    assert info is not None
+
+    # The tool_use/tool_result pair must be together in recent
+    recent_msgs = compacted[1:]
+    tool_use_ids = set()
+    for msg in recent_msgs:
+        content = msg.get("content")
+        if isinstance(content, list):
+            for b in content:
+                if isinstance(b, dict) and b.get("type") == "tool_use":
+                    tool_use_ids.add(b.get("id", ""))
+
+    for msg in recent_msgs:
+        content = msg.get("content")
+        if isinstance(content, list):
+            for b in content:
+                if isinstance(b, dict) and b.get("type") == "tool_result":
+                    assert b.get("tool_use_id", "") in tool_use_ids
+
+
+def test_conversion_sanitizer_fixes_orphan_tool():
+    """Direct test of sanitize_orphan_tool_results with an orphan role:tool."""
+    from zen_claude_bridge.conversions import sanitize_orphan_tool_results
+
+    messages = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi, let me search"},
+        # This role:tool has no preceding assistant with tool_calls
+        {"role": "tool", "content": "Search results here", "tool_call_id": "tu_nonexistent"},
+        {"role": "assistant", "content": "Here are the results"},
+    ]
+    sanitized = sanitize_orphan_tool_results(messages)
+    # The orphan role:tool should be converted to role:user
+    assert len(sanitized) == 4
+    assert sanitized[2]["role"] == "user"
+    assert "Search results here" in str(sanitized[2].get("content", ""))
+
+
+def test_validate_catches_orphan_tool():
+    """validate_openai_tool_history must now reject orphan role:tool messages."""
+    from zen_claude_bridge.conversions import validate_openai_tool_history
+
+    messages = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi"},
+        {"role": "tool", "content": "orphan", "tool_call_id": "tu_nonexistent"},
+    ]
+    with pytest.raises(ValueError, match="role 'tool' message"):
+        validate_openai_tool_history(messages)
+
+
+def test_sanitize_openai_tool_history_fixes_orphan_tool():
+    """sanitize_openai_tool_history must fix orphan role:tool messages."""
+    from zen_claude_bridge.conversions import sanitize_openai_tool_history
+
+    messages = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi"},
+        {"role": "tool", "content": "orphan result", "tool_call_id": "tu_ghost"},
+        {"role": "assistant", "content": "done"},
+    ]
+    sanitized = sanitize_openai_tool_history(messages)
+    assert sanitized[2]["role"] == "user"
+
+
+def test_no_tool_split_with_rebalance():
+    """Edge case: tool_use is older[-1], gets pulled forward by rebalance."""
+    older = [
+        {"role": "user", "content": "setup"},
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "tu_001", "name": "foo", "input": {}}],
+        },
+    ]
+    recent = [
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "tu_001", "content": "done"}],
+        },
+        {"role": "assistant", "content": "finished"},
+    ]
+    new_older, new_recent = _rebalance_tool_pair_boundary(older, recent)
+    assert len(new_older) == 1
+    assert len(new_recent) == 3
+    # The tool_use should be in recent now
+    assert _has_tool_use(new_recent[0])
+
+
+def test_remembered_word_survives_reasoning_safe_compaction():
+    """With reasoning-safe active, the remembered word must survive
+    in the memory block."""
+    settings = _make_settings(
+        bridge_compaction_trigger_tokens=10,
+        bridge_compaction_keep_recent_messages=3,
+        bridge_reasoning_safe_mode="always",
+        bridge_reasoning_safe_keep_recent_messages=3,
+    )
+    msgs = [
+        {"role": "user", "content": "Remember: pineapple_bridge_742"},
+        {"role": "assistant", "content": "Noted!"},
+        {"role": "user", "content": "Write a long story. " * 100},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "tu_001", "name": "get_info", "input": {"q": "AI"}}
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "tu_001", "content": "info about AI"}
+            ],
+        },
+        {"role": "assistant", "content": "Here is what I found."},
+        {"role": "user", "content": "What was the word I gave you?"},
+    ]
+    compacted, info = maybe_compact_messages(
+        msgs, None, settings, reasoning_safe=True
+    )
+    assert info is not None
+    memory_text = str(compacted[0])
+    assert "pineapple_bridge_742" in memory_text
