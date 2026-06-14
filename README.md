@@ -8,6 +8,34 @@ No LiteLLM. No OpenAI API key. No billing surprises. Just a clean local bridge.
 
 ---
 
+## Quickstart on Windows
+
+```powershell
+git clone https://github.com/kqrege/zen-claude-bridge.git
+cd zen-claude-bridge
+scripts\setup-windows.bat
+notepad .env
+scripts\run-all.bat
+```
+
+In `.env`, set your API key:
+
+```env
+OPENCODE_ZEN_API_KEY=your_actual_key_here
+```
+
+Then configure Claude Gateway:
+
+| Setting | Value |
+|---------|-------|
+| **URL** | `http://127.0.0.1:4000` |
+| **API key** | `sk-local-zen` |
+| **Auth type** | Bearer |
+
+**That's it.** `setup-windows.bat` automatically downloads and manages `deepseek-cursor-proxy` — you don't need to install it separately.
+
+---
+
 ## Architecture
 
 ```
@@ -30,7 +58,7 @@ Claude Desktop / Claude Code Gateway
            │  stream=true
            ▼
 ┌─────────────────────────────┐
-│  deepseek-cursor-proxy      │  ← local proxy (port 9000)
+│  deepseek-cursor-proxy      │  ← auto-managed proxy (port 9000)
 │  --no-display-reasoning     │
 └──────────┬──────────────────┘
            │
@@ -63,7 +91,7 @@ The `deepseek-cursor-proxy` backend only implements `/v1/chat/completions`. Lite
 | Component | Purpose |
 |-----------|---------|
 | `zen-claude-bridge` (this repo) | Anthropic → OpenAI translation, model aliasing, dot-probe suppression, streaming |
-| `deepseek-cursor-proxy` | Routes OpenAI chat completions to OpenCode Zen API |
+| `deepseek-cursor-proxy` (auto-managed) | Routes OpenAI chat completions to OpenCode Zen API |
 | OpenCode Zen | Provides `deepseek-v4-flash-free` model at no cost |
 
 ### Key Design Decisions
@@ -81,84 +109,60 @@ The `deepseek-cursor-proxy` backend only implements `/v1/chat/completions`. Lite
 | Item | Notes |
 |------|-------|
 | **OS** | Windows recommended (scripts are `.bat`). Linux/macOS can use the Python module directly. |
-| **Python** | 3.10+ or 3.11+ |
-| **`uv`** | Required by `deepseek-cursor-proxy`. Install from [astral.sh/uv](https://docs.astral.sh/uv/) |
+| **Python** | 3.10+ |
+| **`uv`** | Required by `deepseek-cursor-proxy`. Setup script checks for it. |
 | **OpenCode Zen API key** | Required for upstream access. Get it from the OpenCode dashboard. |
 | **Claude Desktop / Claude Code Gateway** | Your Anthropic account with gateway feature enabled. |
-| **[`yxlao/deepseek-cursor-proxy`](https://github.com/yxlao/deepseek-cursor-proxy)** | Required upstream proxy. Handles DeepSeek reasoning/tool-call compatibility on port 9000. |
+| **`git`** | Required to clone dependencies automatically during setup. |
 
 ---
 
-## Installation
+## One-Command Setup
 
-### 1. Clone the repository
-
-```bash
-git clone https://github.com/kqrege/zen-claude-bridge.git
-cd zen-claude-bridge
-```
-
-### 2. Run setup
-
-```batch
+```powershell
 scripts\setup-windows.bat
 ```
 
-This creates a Python virtual environment, installs dependencies, and copies `.env.example` to `.env`.
+This single command:
 
-### 3. Configure your API key
+1. Creates a Python virtual environment (`.venv`).
+2. Installs all Python dependencies.
+3. Checks that `uv` is installed.
+4. **Automatically clones** `deepseek-cursor-proxy` into `.external/deepseek-cursor-proxy/`.
+5. Creates `.env` from `.env.example` if it doesn't exist.
+6. Prints next steps.
 
-Edit `.env`:
+You do **not** need to manually clone `deepseek-cursor-proxy`.
 
-```env
-CLAUDE_GATEWAY_KEY=sk-local-zen
-OPENCODE_ZEN_API_KEY=your_actual_opencode_key_here
-DEEPSEEK_MODEL=deepseek-v4-flash-free
-DEEPSEEK_UPSTREAM_URL=http://127.0.0.1:9000/v1/chat/completions
-BRIDGE_HOST=127.0.0.1
-BRIDGE_PORT=4000
-REQUEST_TIMEOUT_SECONDS=600
-```
+---
 
-### 4. Install `deepseek-cursor-proxy`
+## One-Command Run
 
-```bash
-git clone https://github.com/mylxsw/deepseek-cursor-proxy.git
-cd deepseek-cursor-proxy
-uv sync
-```
-
-### 5. Start the proxy (Window 1)
-
-```batch
-scripts\run-deepseek-proxy.bat
-```
-
-Or directly:
-
-```bash
-cd path\to\deepseek-cursor-proxy
-uv run deepseek-cursor-proxy --no-ngrok --port 9000 --no-display-reasoning
-```
-
-### 6. Start the bridge (Window 2)
-
-```batch
-scripts\run-bridge.bat
-```
-
-Or:
-
-```bash
-cd zen-claude-bridge
-python -m uvicorn zen_claude_bridge.app:app --host 127.0.0.1 --port 4000
-```
-
-### 7. Start all at once
-
-```batch
+```powershell
 scripts\run-all.bat
 ```
+
+This opens two terminal windows:
+
+| Window | Service | Port |
+|--------|---------|------|
+| 1 | `deepseek-cursor-proxy` | `9000` |
+| 2 | `zen-claude-bridge` | `4000` |
+
+It also prints the Claude Gateway configuration.
+
+---
+
+## Individual Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `scripts\setup-windows.bat` | One-time setup (venv, deps, clone proxy) |
+| `scripts\run-all.bat` | Start both proxy and bridge in separate windows |
+| `scripts\run-deepseek-proxy.bat` | Start only the DeepSeek proxy (port 9000) |
+| `scripts\run-bridge.bat` | Start only the bridge (port 4000) |
+| `scripts\update-deepseek-proxy.bat` | Update the managed `deepseek-cursor-proxy` copy |
+| `scripts\test-bridge.bat` | Smoke tests (uses port 4010, safe for live bridges) |
 
 ---
 
@@ -171,7 +175,6 @@ Configure Claude Desktop or Claude Code Gateway with these settings:
 | **URL** | `http://127.0.0.1:4000` |
 | **API key** | `sk-local-zen` |
 | **Auth type** | Bearer |
-| **Model allowlist** | See below |
 
 ### Model aliases (add all to allowlist)
 
@@ -229,6 +232,23 @@ See [examples/troubleshooting.md](examples/troubleshooting.md) for detailed solu
 
 ---
 
+## Managed `deepseek-cursor-proxy`
+
+`deepseek-cursor-proxy` is automatically cloned into `.external/deepseek-cursor-proxy/` during setup.
+
+- **No manual cloning needed.** The setup script handles it.
+- **The folder is gitignored.** It won't appear in commits.
+- **To update:** Run `scripts\update-deepseek-proxy.bat`.
+- **To reinstall:** Delete `.external\deepseek-cursor-proxy` and re-run setup.
+- **To use a custom path:** Set `DEEPSEEK_CURSOR_PROXY_DIR` env var before running `scripts\run-deepseek-proxy.bat`.
+- **Docs:** [examples/managed-deepseek-proxy.md](examples/managed-deepseek-proxy.md)
+
+### Important
+
+`deepseek-cursor-proxy` is an external project by **yxlao** ([GitHub](https://github.com/yxlao/deepseek-cursor-proxy)). This repo does not modify, re-license, or claim ownership of its code. It simply manages a local clone for convenience. Full attribution is maintained in [NOTICE](NOTICE).
+
+---
+
 ## Development
 
 ```bash
@@ -257,14 +277,16 @@ python -m uvicorn zen_claude_bridge.app:app --host 127.0.0.1 --port 4000 --reloa
 
 ```
 zen-claude-bridge/
+├── .external/                      # Auto-managed dependencies (gitignored)
+│   └── deepseek-cursor-proxy/      # Cloned by setup-windows.bat
 ├── src/zen_claude_bridge/
 │   ├── __init__.py
-│   ├── app.py             # FastAPI app with all endpoints
-│   ├── config.py          # Environment variable configuration
-│   ├── conversions.py     # Anthropic ↔ OpenAI message/tool conversion
-│   ├── security.py        # Bearer auth, secret redaction
-│   ├── streaming.py       # Anthropic-compatible SSE streaming
-│   └── token_count.py     # Local approximate token counting
+│   ├── app.py                      # FastAPI app with all endpoints
+│   ├── config.py                   # Environment variable configuration
+│   ├── conversions.py              # Anthropic ↔ OpenAI message/tool conversion
+│   ├── security.py                 # Bearer auth, secret redaction
+│   ├── streaming.py                # Anthropic-compatible SSE streaming
+│   └── token_count.py              # Local approximate token counting
 ├── tests/
 │   ├── test_conversions.py
 │   ├── test_token_count.py
@@ -272,13 +294,15 @@ zen-claude-bridge/
 │   └── test_models.py
 ├── scripts/
 │   ├── setup-windows.bat
+│   ├── run-all.bat
 │   ├── run-bridge.bat
 │   ├── run-deepseek-proxy.bat
-│   ├── run-all.bat
+│   ├── update-deepseek-proxy.bat
 │   └── test-bridge.bat
 ├── examples/
 │   ├── architecture.md
 │   ├── claude-gateway-settings.md
+│   ├── managed-deepseek-proxy.md
 │   └── troubleshooting.md
 ├── .env.example
 ├── .gitignore

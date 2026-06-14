@@ -39,6 +39,16 @@ class Settings:
             "DEEPSEEK_MODEL", "deepseek-v4-flash-free"
         )
     )
+    deepseek_proxy_host: str = field(
+        default_factory=lambda: os.environ.get(
+            "DEEPSEEK_PROXY_HOST", "127.0.0.1"
+        )
+    )
+    deepseek_proxy_port: int = field(
+        default_factory=lambda: int(
+            os.environ.get("DEEPSEEK_PROXY_PORT", "9000")
+        )
+    )
     bridge_host: str = field(
         default_factory=lambda: os.environ.get("BRIDGE_HOST", "127.0.0.1")
     )

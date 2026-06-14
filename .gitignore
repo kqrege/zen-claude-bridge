@@ -28,5 +28,8 @@ Thumbs.db
 # Logs
 *.log
 
+# External managed dependencies (auto-cloned by setup)
+.external/
+
 # Projects that should not be committed
 deepseek-cursor-proxy/

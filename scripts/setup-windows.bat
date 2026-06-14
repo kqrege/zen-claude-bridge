@@ -1,7 +1,7 @@
 @echo off
 SETLOCAL ENABLEDELAYEDEXPANSION
 
-:: Resolve paths relative to script location (scripts\.. = repo root)
+:: Change to repo root (works from scripts\ or repo root)
 cd /d "%~dp0.."
 set "ROOT=%CD%"
 
@@ -12,18 +12,24 @@ echo.
 echo  Root: %ROOT%
 echo.
 
-:: Check Python
+:: -------------------------------------------------------
+:: 1. Check Python
+:: -------------------------------------------------------
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] Python is not in PATH. Please install Python 3.10+ from python.org
-    echo        and make sure "python" is available in your terminal.
+    echo [ERROR] Python is not in PATH. Please install Python 3.10+ from:
+    echo         https://www.python.org/downloads/
+    echo.
+    echo         Make sure "Add Python to PATH" is checked during installation.
     pause
     exit /b 1
 )
 
-:: Create virtual environment if missing
+:: -------------------------------------------------------
+:: 2. Python virtual environment
+:: -------------------------------------------------------
 if not exist ".venv\" (
-    echo [1/3] Creating virtual environment...
+    echo [1/6] Creating Python virtual environment...
     python -m venv .venv
     if errorlevel 1 (
         echo [ERROR] Failed to create virtual environment.
@@ -31,26 +37,80 @@ if not exist ".venv\" (
         exit /b 1
     )
 ) else (
-    echo [1/3] Virtual environment already exists.
+    echo [1/6] Virtual environment already exists.
 )
 
-:: Activate and install
-echo [2/3] Installing requirements...
 call .venv\Scripts\activate.bat
+
+:: -------------------------------------------------------
+:: 3. Install Python dependencies
+:: -------------------------------------------------------
+echo [2/6] Installing Python dependencies...
+python -m pip install -U pip >nul 2>&1
 pip install -r requirements.txt
 if errorlevel 1 (
     echo [ERROR] pip install failed.
     pause
     exit /b 1
 )
+pip install -e . >nul 2>&1
 
-:: Create .env from example if missing
-if not exist ".env" (
-    echo [3/3] Creating .env from .env.example...
-    copy .env.example .env >nul
-    echo        Please edit .env and set your OPENCODE_ZEN_API_KEY.
+:: -------------------------------------------------------
+:: 4. Check uv (required by deepseek-cursor-proxy)
+:: -------------------------------------------------------
+echo [3/6] Checking uv...
+uv --version >nul 2>&1
+if errorlevel 1 (
+    echo         uv not found — attempting to install via pip...
+    python -m pip install uv >nul 2>&1
+    if errorlevel 1 (
+        echo.
+        echo [ERROR] Could not install uv automatically.
+        echo.
+        echo  deepseek-cursor-proxy requires uv to run.
+        echo  Please install it manually:
+        echo.
+        echo    powershell -c "irm https://astral.sh/uv/install.ps1 ^| iex"
+        echo.
+        echo  Or from: https://docs.astral.sh/uv/
+        echo.
+        pause
+        exit /b 1
+    )
+    echo         Installed uv via pip.
+)
+for /f "tokens=*" %%i in ('uv --version') do set "UV_VER=%%i"
+echo         Found: %UV_VER%
+
+:: -------------------------------------------------------
+:: 5. Clone / update deepseek-cursor-proxy into .external/
+:: -------------------------------------------------------
+echo [4/6] Setting up deepseek-cursor-proxy...
+if not exist ".external\" mkdir ".external"
+
+if not exist ".external\deepseek-cursor-proxy\" (
+    echo         Cloning yxlao/deepseek-cursor-proxy into .external\...
+    git clone https://github.com/yxlao/deepseek-cursor-proxy.git ".external\deepseek-cursor-proxy"
+    if errorlevel 1 (
+        echo [ERROR] Git clone failed. Check your internet connection.
+        pause
+        exit /b 1
+    )
+    echo         Cloned successfully.
 ) else (
-    echo [3/3] .env already exists — skipping.
+    echo         deepseek-cursor-proxy already exists in .external\.
+    echo         To update it later, run: scripts\update-deepseek-proxy.bat
+)
+
+:: -------------------------------------------------------
+:: 6. Create .env from .env.example if missing
+:: -------------------------------------------------------
+echo [5/6] Checking .env...
+if not exist ".env" (
+    copy .env.example .env >nul
+    echo         Created .env from .env.example.
+) else (
+    echo         .env already exists — keeping your settings.
 )
 
 echo.
@@ -59,9 +119,25 @@ echo  Setup complete!
 echo ============================================
 echo.
 echo  Next steps:
-echo    1. Edit .env and set OPENCODE_ZEN_API_KEY=your_key
-echo    2. Run scripts\run-deepseek-proxy.bat   (in one terminal)
-echo    3. Run scripts\run-bridge.bat           (in another terminal)
-echo    4. Configure Claude Gateway to use http://127.0.0.1:4000
+echo.
+echo    1. Edit .env and set your API key:
+echo         notepad .env
+echo.
+echo       Change:  OPENCODE_ZEN_API_KEY=replace_me
+echo       To:      OPENCODE_ZEN_API_KEY=your_actual_key
+echo.
+echo    2. Start everything:
+echo         scripts\run-all.bat
+echo.
+echo    3. Configure Claude Gateway:
+echo         URL:      http://127.0.0.1:4000
+echo         API key:  sk-local-zen
+echo         Auth:     Bearer
+echo.
+echo  Individual scripts:
+echo     scripts\run-deepseek-proxy.bat    (proxy on port 9000)
+echo     scripts\run-bridge.bat            (bridge on port 4000)
+echo     scripts\update-deepseek-proxy.bat (update deepseek-cursor-proxy)
+echo     scripts\test-bridge.bat           (smoke tests)
 echo.
 pause
