@@ -17,3 +17,13 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
+
+Acknowledgements
+
+This project is designed to interoperate with yxlao/deepseek-cursor-proxy:
+https://github.com/yxlao/deepseek-cursor-proxy
+
+deepseek-cursor-proxy is an independent MIT-licensed project that provides
+DeepSeek V4 reasoning_content compatibility for tool-call workflows.
+
+No affiliation or endorsement is implied.

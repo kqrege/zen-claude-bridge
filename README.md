@@ -85,6 +85,7 @@ The `deepseek-cursor-proxy` backend only implements `/v1/chat/completions`. Lite
 | **`uv`** | Required by `deepseek-cursor-proxy`. Install from [astral.sh/uv](https://docs.astral.sh/uv/) |
 | **OpenCode Zen API key** | Required for upstream access. Get it from the OpenCode dashboard. |
 | **Claude Desktop / Claude Code Gateway** | Your Anthropic account with gateway feature enabled. |
+| **[`yxlao/deepseek-cursor-proxy`](https://github.com/yxlao/deepseek-cursor-proxy)** | Required upstream proxy. Handles DeepSeek reasoning/tool-call compatibility on port 9000. |
 
 ---
 
@@ -301,6 +302,10 @@ Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 This project is an independent compatibility bridge. It is not affiliated with Anthropic, Claude, DeepSeek, Cursor, or OpenCode. All product names and trademarks are the property of their respective owners.
 
-## Credits
+## Credits / Acknowledgements
 
-This project uses the concept of `deepseek-cursor-proxy` by [mylxsw](https://github.com/mylxsw) as a routing layer to OpenCode Zen. Without that project, this bridge would not exist.
+This project is designed to work with [`yxlao/deepseek-cursor-proxy`](https://github.com/yxlao/deepseek-cursor-proxy), which handles DeepSeek V4 thinking/tool-call compatibility by preserving and reinjecting `reasoning_content`.
+
+`zen-claude-bridge` provides the Claude/Anthropic-compatible Gateway layer in front of that proxy. It does not replace `deepseek-cursor-proxy`; it depends on it for the DeepSeek reasoning/tool-call compatibility path used in this setup.
+
+This project is independent and is not affiliated with Anthropic, Claude, DeepSeek, Cursor, OpenCode, or the `deepseek-cursor-proxy` maintainers.

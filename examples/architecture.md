@@ -99,6 +99,12 @@ By writing a focused FastAPI bridge, we:
 
 ---
 
+### Role of deepseek-cursor-proxy
+
+`deepseek-cursor-proxy` is used as the upstream OpenAI-compatible proxy on port `9000`. It handles DeepSeek V4 thinking/tool-call compatibility, especially the `reasoning_content` behavior required by DeepSeek thinking-mode tool calls.
+
+`zen-claude-bridge` sits in front of it and translates Claude/Anthropic Gateway requests into OpenAI-compatible chat completion requests.
+
 ## Why deepseek-cursor-proxy?
 
 OpenCode Zen's API is a standard OpenAI-compatible chat completions endpoint. However, Claude Desktop sends messages in Anthropic format. Rather than calling OpenCode Zen directly, we need:
