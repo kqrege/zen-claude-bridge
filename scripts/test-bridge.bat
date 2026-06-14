@@ -1,7 +1,6 @@
 @echo off
-SETLOCAL ENABLEDELAYEDEXPANSION
+setlocal EnableExtensions
 
-:: Use a separate test port so we never touch the live bridge on 4000.
 set "TEST_PORT=4010"
 set "BASE_URL=http://127.0.0.1:%TEST_PORT%"
 set "AUTH_KEY=sk-local-zen"
@@ -10,28 +9,23 @@ cd /d "%~dp0.."
 set "ROOT=%CD%"
 
 echo ============================================
-echo  Zen Claude Bridge — Smoke Tests
+echo  Zen Claude Bridge - Smoke Tests
 echo ============================================
 echo.
-echo  Using temporary port: %TEST_PORT% (safe — port 4000 is untouched)
+echo  Using temporary port: %TEST_PORT% (safe - port 4000 is untouched)
 echo.
 
-:: --------------------------------------------------
-:: Start bridge on test port
-:: --------------------------------------------------
 echo  Starting bridge on port %TEST_PORT% for testing...
-if exist ".venv\Scripts\activate.bat" (
-    call .venv\Scripts\activate.bat
+if exist "%ROOT%\.venv\Scripts\activate.bat" (
+    call "%ROOT%\.venv\Scripts\activate.bat"
 ) else (
     echo [SKIP] Virtual environment not found. Run scripts\setup-windows.bat first.
     pause
     exit /b 1
 )
 
-:: Start bridge in background, redirect output to temp log
 start "Bridge-Test" cmd /c "python -m uvicorn zen_claude_bridge.app:app --host 127.0.0.1 --port %TEST_PORT% > \"%TEMP%\bridge-test.log\" 2>&1"
 
-:: Wait for bridge to be ready
 echo  Waiting for bridge to start...
 set "READY="
 for /l %%i in (1,1,15) do (
@@ -52,9 +46,6 @@ if not defined READY (
 echo  Bridge is ready on port %TEST_PORT%.
 echo.
 
-:: --------------------------------------------------
-:: Test 1: GET / (health check)
-:: --------------------------------------------------
 echo [Test 1] GET / (health check)
 curl -s "%BASE_URL%/" -H "Authorization: Bearer %AUTH_KEY%"
 if errorlevel 1 (
@@ -65,10 +56,7 @@ echo.
 echo     PASS
 echo.
 
-:: --------------------------------------------------
-:: Test 2: GET /v1/models
-:: --------------------------------------------------
-echo [Test 2] GET /v1/models (model listing)
+echo [Test 2] GET /v1/models
 curl -s "%BASE_URL%/v1/models" -H "Authorization: Bearer %AUTH_KEY%"
 if errorlevel 1 (
     echo [FAIL] Models endpoint failed.
@@ -78,10 +66,7 @@ echo.
 echo     PASS
 echo.
 
-:: --------------------------------------------------
-:: Test 3: POST /v1/messages/count_tokens
-:: --------------------------------------------------
-echo [Test 3] POST /v1/messages/count_tokens (local token counting)
+echo [Test 3] POST /v1/messages/count_tokens
 curl -s -X POST "%BASE_URL%/v1/messages/count_tokens" ^
   -H "Authorization: Bearer %AUTH_KEY%" ^
   -H "Content-Type: application/json" ^
@@ -94,9 +79,6 @@ echo.
 echo     PASS
 echo.
 
-:: --------------------------------------------------
-:: Test 4: Dot probe suppression
-:: --------------------------------------------------
 echo [Test 4] Dot probe suppression (POST single dot)
 curl -s -X POST "%BASE_URL%/v1/messages/count_tokens" ^
   -H "Authorization: Bearer %AUTH_KEY%" ^
@@ -110,9 +92,6 @@ echo.
 echo     PASS
 echo.
 
-:: --------------------------------------------------
-:: Test 5: Non-streaming generation (requires upstream on 9000)
-:: --------------------------------------------------
 echo [Test 5] POST /v1/messages non-streaming (requires upstream on port 9000)
 curl -s -o "%TEMP%\bridge-gen-test.json" -w "%%{http_code}" -X POST "%BASE_URL%/v1/messages" ^
   -H "Authorization: Bearer %AUTH_KEY%" ^
@@ -126,10 +105,10 @@ if "%TEST5_HTTP%"=="200" (
     echo     PASS ^(HTTP 200^)
     type "%TEMP%\bridge-gen-test.json"
 ) else if "%TEST5_HTTP%"=="502" (
-    echo     SKIP — upstream proxy not running (HTTP 502)
+    echo     SKIP - upstream proxy not running (HTTP 502)
     echo     This is expected if deepseek-cursor-proxy is not on port 9000.
 ) else (
-    echo     INFO — HTTP %TEST5_HTTP% ^(upstream may not be available^)
+    echo     INFO - HTTP %TEST5_HTTP% ^(upstream may not be available^)
 )
 echo.
 echo ============================================
@@ -148,7 +127,6 @@ echo  Test 5 requires deepseek-cursor-proxy on port 9000.
 echo.
 
 :cleanup
-:: Stop the test bridge (kill the specific test instance)
 echo  Stopping test bridge on port %TEST_PORT%...
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr /c:"127.0.0.1:%TEST_PORT%" 2^>nul') do (
     if not "%%a"=="" (

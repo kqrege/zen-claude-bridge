@@ -1,20 +1,24 @@
 @echo off
-SETLOCAL
+setlocal EnableExtensions
 
 cd /d "%~dp0.."
+set "ROOT=%CD%"
 
-:: Load .env variables (simple key=value parsing)
-if exist ".env" (
-    for /f "tokens=*" %%a in (.env) do set %%a
+if exist "%ROOT%\.env" (
+    for /f "usebackq tokens=1* delims==" %%a in ("%ROOT%\.env") do (
+        set "_key=%%a"
+        set "_val=%%b"
+        if defined _val (
+            call set "%%_key%%=%%_val%%"
+        )
+    )
 )
 
-:: Read bridge port from environment, default 4000
 if "%BRIDGE_PORT%"=="" set "BRIDGE_PORT=4000"
 if "%BRIDGE_HOST%"=="" set "BRIDGE_HOST=127.0.0.1"
 
-:: Activate venv
-if exist ".venv\Scripts\activate.bat" (
-    call .venv\Scripts\activate.bat
+if exist "%ROOT%\.venv\Scripts\activate.bat" (
+    call "%ROOT%\.venv\Scripts\activate.bat"
 ) else (
     echo [WARN] Virtual environment not found. Run scripts\setup-windows.bat first.
     pause

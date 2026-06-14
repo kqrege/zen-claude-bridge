@@ -170,6 +170,7 @@ It also prints the Claude Gateway configuration.
 | `scripts\run-bridge.bat` | Start only the bridge (port 4000) |
 | `scripts\update-deepseek-proxy.bat` | Update the managed `deepseek-cursor-proxy` copy |
 | `scripts\test-bridge.bat` | Smoke tests (uses port 4010, safe for live bridges) |
+| `scripts\diagnose-windows.bat` | Print diagnostics for troubleshooting path issues |
 
 ---
 
@@ -249,7 +250,30 @@ See [examples/troubleshooting.md](examples/troubleshooting.md) for detailed solu
 - **To update:** Run `scripts\update-deepseek-proxy.bat`.
 - **To reinstall:** Delete `.external\deepseek-cursor-proxy` and re-run setup.
 - **To use a custom path:** Set `DEEPSEEK_CURSOR_PROXY_DIR` env var before running `scripts\run-deepseek-proxy.bat`.
+- **To diagnose path issues:** Run `scripts\diagnose-windows.bat`.
 - **Docs:** [examples/managed-deepseek-proxy.md](examples/managed-deepseek-proxy.md)
+
+### Repairing a broken managed clone
+
+If the proxy fails to start, first run diagnostics:
+
+```powershell
+scripts\diagnose-windows.bat
+```
+
+If the clone is corrupted or incomplete, delete it and re-clone:
+
+```cmd
+rmdir /s /q .external\deepseek-cursor-proxy
+scripts\setup-windows.bat
+```
+
+Or using PowerShell:
+
+```powershell
+Remove-Item .external\deepseek-cursor-proxy -Recurse -Force
+scripts\setup-windows.bat
+```
 
 ### Important
 

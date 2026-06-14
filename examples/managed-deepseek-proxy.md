@@ -58,19 +58,43 @@ scripts\update-deepseek-proxy.bat
 
 This runs `git pull --ff-only` inside the managed copy. It will not destroy local changes or reset your repository.
 
+## Diagnosing Issues
+
+If the managed proxy path is not detected correctly, run the diagnostic script:
+
+```powershell
+scripts\diagnose-windows.bat
+```
+
+This prints:
+
+- The resolved root directory.
+- Whether `.env`, `.venv`, and the managed proxy exist.
+- For the managed proxy, whether `.git`, `pyproject.toml`, and `src/` are present.
+- The effective `DEEPSEEK_CURSOR_PROXY_DIR` setting.
+- Port availability for ports 4000 and 9000.
+- Whether `python`, `uv`, `git`, and `curl` are in PATH.
+
 ## Reinstalling
 
 If the managed copy gets corrupted or you want a fresh clone:
 
+```cmd
+rmdir /s /q .external\deepseek-cursor-proxy
+scripts\setup-windows.bat
+```
+
+Or using PowerShell:
+
 ```powershell
-rmdir /s .external\deepseek-cursor-proxy
+Remove-Item .external\deepseek-cursor-proxy -Recurse -Force
 scripts\setup-windows.bat
 ```
 
 Or just delete the entire `.external` folder:
 
-```powershell
-rmdir /s .external
+```cmd
+rmdir /s /q .external
 scripts\setup-windows.bat
 ```
 
