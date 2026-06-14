@@ -9,6 +9,7 @@ from zen_claude_bridge.conversions import (
     convert_system,
     convert_tools,
     is_dot_probe,
+    normalize_tool_schema,
     sanitize_openai_tool_history,
     validate_openai_tool_history,
 )
@@ -460,6 +461,114 @@ def test_convert_tools():
 
 def test_convert_tools_none():
     assert convert_tools(None) is None
+
+
+# ---------------------------------------------------------------------------
+# Tool schema normalization
+# ---------------------------------------------------------------------------
+
+
+def test_null_input_schema_uses_fallback():
+    """web_search-style tool with input_schema: None gets valid object schema."""
+    tools = [{"name": "web_search", "description": "Search the web", "input_schema": None}]
+    result = convert_tools(tools)
+    assert result is not None
+    params = result[0]["function"]["parameters"]
+    assert params["type"] == "object"
+    assert isinstance(params["properties"], dict)
+    assert result[0]["function"]["name"] == "web_search"
+
+
+def test_missing_input_schema_uses_fallback():
+    tools = [{"name": "read_file"}]
+    result = convert_tools(tools)
+    assert result is not None
+    params = result[0]["function"]["parameters"]
+    assert params["type"] == "object"
+    assert isinstance(params["properties"], dict)
+
+
+def test_input_schema_with_null_type_gets_fixed():
+    tools = [{"name": "search", "input_schema": {"type": None}}]
+    result = convert_tools(tools)
+    assert result is not None
+    params = result[0]["function"]["parameters"]
+    assert params["type"] == "object"
+
+
+def test_input_schema_no_properties_gets_empty_properties():
+    tools = [{"name": "fn", "input_schema": {"type": "object"}}]
+    result = convert_tools(tools)
+    assert result is not None
+    params = result[0]["function"]["parameters"]
+    assert params["type"] == "object"
+    assert params["properties"] == {}
+
+
+def test_valid_schema_preserved():
+    tools = [
+        {
+            "name": "get_weather",
+            "input_schema": {
+                "type": "object",
+                "properties": {"location": {"type": "string"}},
+                "required": ["location"],
+            },
+        }
+    ]
+    result = convert_tools(tools)
+    assert result is not None
+    params = result[0]["function"]["parameters"]
+    assert params["type"] == "object"
+    assert params["properties"]["location"]["type"] == "string"
+    assert params["required"] == ["location"]
+
+
+def test_no_outgoing_tool_has_null_parameters():
+    tools = [
+        {"name": "web_search", "description": "Search", "input_schema": None},
+        {"name": "no_schema"},
+        {"name": "valid", "input_schema": {"type": "object", "properties": {}}},
+    ]
+    result = convert_tools(tools)
+    assert result is not None
+    for t in result:
+        assert t["function"]["parameters"] is not None, f"Tool {t['function']['name']} has null parameters"
+        assert t["function"]["parameters"]["type"] == "object"
+
+
+def test_normalize_tool_schema_none():
+    result = normalize_tool_schema(None)
+    assert result["type"] == "object"
+    assert result["properties"] == {}
+
+
+def test_normalize_tool_schema_non_dict():
+    result = normalize_tool_schema("string")
+    assert result["type"] == "object"
+    assert result["properties"] == {}
+
+
+def test_normalize_tool_schema_empty_dict():
+    result = normalize_tool_schema({})
+    assert result["type"] == "object"
+    assert result["properties"] == {}
+
+
+def test_claude_web_search_style_conversion():
+    tools = [
+        {
+            "name": "web_search",
+            "description": "Search the web and retrieve up-to-date information from the internet. Use this when you need current data, news, documentation, or any public web content.",
+            "input_schema": None,
+        }
+    ]
+    result = convert_tools(tools)
+    assert result is not None
+    assert result[0]["type"] == "function"
+    assert result[0]["function"]["name"] == "web_search"
+    assert result[0]["function"]["parameters"]["type"] == "object"
+    assert result[0]["function"]["parameters"]["properties"] == {}
 
 
 # ---------------------------------------------------------------------------

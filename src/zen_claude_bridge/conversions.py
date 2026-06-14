@@ -126,6 +126,31 @@ def convert_system(system: Any) -> Optional[Dict[str, str]]:
     return {"role": "system", "content": str(system)}
 
 
+def normalize_tool_schema(schema: object) -> dict:
+    """Ensure a tool schema is a valid JSON Schema of type object.
+
+    DeepSeek/OpenAI function tools require ``function.parameters`` to be
+    a JSON Schema object with ``type: "object"``.  If the input is
+    ``None``, a non-dict, or lacks ``type: "object"``, return a safe
+    fallback that accepts any input.
+    """
+    if not isinstance(schema, dict):
+        return {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": True,
+        }
+
+    if schema.get("type") != "object":
+        schema = dict(schema)
+        schema["type"] = "object"
+
+    if not isinstance(schema.get("properties"), dict):
+        schema["properties"] = {}
+
+    return schema
+
+
 def convert_tools(
     tools: Optional[List[Dict[str, Any]]],
 ) -> Optional[List[Dict[str, Any]]]:
@@ -133,13 +158,15 @@ def convert_tools(
         return None
     openai_tools = []
     for t in tools:
+        raw_schema = t.get("input_schema")
+        parameters = normalize_tool_schema(raw_schema)
         openai_tools.append(
             {
                 "type": "function",
                 "function": {
                     "name": t.get("name", "unknown"),
                     "description": t.get("description", ""),
-                    "parameters": t.get("input_schema", {}),
+                    "parameters": parameters,
                 },
             }
         )
